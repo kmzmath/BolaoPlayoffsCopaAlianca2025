@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Bolão — Valorant (HTML único)</title>
+
+  <!-- Tailwind via CDN-->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { primary: { DEFAULT: "#6366f1" } } // indigo-500
+        }
+      }
+    }
+  </script>
+
+  <!-- html2canvas para gerar o print -->
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+  <style>
+    :root { color-scheme: dark; }
+    html, body { background: #000; }
+    .chip { height: 72px; }
+    .logo { filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="text-white">
+<img src="logos/icon.png" alt="Logo" class="fixed top-10 right-20 h-20 w-20 object-contain drop-shadow pointer-events-none select-none" />
+<main id="app" class="min-h-screen"></main>
+
+<script>
+/* =========================================
+   CONFIG
+========================================= */
+const SITE_TITLE = "Bolão Playoffs Copa Aliança - UNIVLR";
+const SUBTITLE   = "Monte e envie seu bolão!";
+
+/* Envio via Discord Webhook */
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1406159491166113904/bnWy9U-vtKt4R62HhZWORghgR5NqDrciDFVR5PlBlxt710Cqda4gHoJHf5YgS3WzbVtn";
+
+/* “1 palpite por navegador” (de boa fé) */
+const LS_LOCK_KEY = "bolao_valorant_lock_v1";
+const LS_DEVICE_ID_KEY = "bolao_valorant_device_id";
+const COOKIE_LOCK_NAME = "bolao_valorant_lock";
+
+/* Geometria (px) — para conectores e layout */
+const CHIP_H=72, LABEL_H=20, CHIPS_GAP=8;
+const MATCH_H = LABEL_H + CHIP_H*2 + CHIPS_GAP;
+const GROUP_GAP=32, GROUP_H = MATCH_H*2 + GROUP_GAP;
+const ARM_W=72, SEMIS_GAP=64;
+
+/* =========================================
+   DADOS
+========================================= */
+const TEAMS = {
+  ufu_saints: { id:"ufu_saints", name:"UFU Saints", logo:"logos/ufu_saints_ravens.png" },
+  ufrj_canis_x: { id:"ufrj_canis_x", name:"UFRJ Canis X", logo:"logos/canis_ufrj_x.png" },
+  unicamp_tritons_black: { id:"unicamp_tritons_black", name:"Unicamp Tritons Black", logo:"logos/unicamp_tritons_black.png" },
+  ufg_eagles: { id:"ufg_eagles", name:"UFG Eagles", logo:"logos/ufg_eagles.png" },
+  maua_esports: { id:"maua_esports", name:"Mauá Esports", logo:"logos/maua_pipao.png" },
+  caap_hellhounds: { id:"caap_hellhounds", name:"CAAP Hellhounds", logo:"logos/caap_hellhounds.png" },
+  azure_bears_golden: { id:"azure_bears_golden", name:"Azure Bears Golden", logo:"logos/azure_bears_golden.png" },
+  macklogic_red: { id:"macklogic_red", name:"MackLogic Red", logo:"logos/macklogic_red.png" },
+};
+const SEED = {
+  ufu_saints:1, ufrj_canis_x:8, unicamp_tritons_black:4, ufg_eagles:5,
+  maua_esports:2, caap_hellhounds:7, azure_bears_golden:3, macklogic_red:6
+};
+
+const MATCH_IDS = ["m1","m2","m3","m4","m5","m6","m7"];
+
+const BASE_MATCHES = {
+  m1: { label:"Quartas A (Partida 1)", a: TEAMS.ufu_saints, b: TEAMS.ufrj_canis_x },
+  m2: { label:"Quartas B (Partida 2)", a: TEAMS.unicamp_tritons_black, b: TEAMS.ufg_eagles },
+  m3: { label:"Quartas C (Partida 3)", a: TEAMS.maua_esports, b: TEAMS.caap_hellhounds },
+  m4: { label:"Quartas D (Partida 4)", a: TEAMS.azure_bears_golden, b: TEAMS.macklogic_red },
+};
+
+/* =========================================
+   STATE (vanilla)
+========================================= */
+const state = {
+  name: "",
+  picks: {},       // m1..m7 -> teamId
+  locked: false,
+};
+
+/* =========================================
+   HELPERS
+========================================= */
+function classNames(...xs){ return xs.filter(Boolean).join(" "); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function refTeam(id){ if (!id) return undefined; return TEAMS[id]; }
+function placeholder(text){ return { id:`ph_${text.toLowerCase().replace(/ +/g,"_")}`, name:text, isPlaceholder:true }; }
+
+function participantsFor(matchId, picks){
+  switch (matchId){
+    case "m1": return [BASE_MATCHES.m1.a, BASE_MATCHES.m1.b];
+    case "m2": return [BASE_MATCHES.m2.a, BASE_MATCHES.m2.b];
+    case "m3": return [BASE_MATCHES.m3.a, BASE_MATCHES.m3.b];
+    case "m4": return [BASE_MATCHES.m4.a, BASE_MATCHES.m4.b];
+    case "m5": {
+      const w1 = refTeam(picks.m1); const w2 = refTeam(picks.m2);
+      return [w1 ?? placeholder("Vencedor Quartas A"), w2 ?? placeholder("Vencedor Quartas B")];
+    }
+    case "m6": {
+      const w3 = refTeam(picks.m3); const w4 = refTeam(picks.m4);
+      return [w3 ?? placeholder("Vencedor Quartas C"), w4 ?? placeholder("Vencedor Quartas D")];
+    }
+    case "m7": {
+      const w5 = refTeam(picks.m5); const w6 = refTeam(picks.m6);
+      return [w5 ?? placeholder("Vencedor Semi-Final 1"), w6 ?? placeholder("Vencedor Semi-Final 2")];
+    }
+  }
+}
+
+function sanitizePicks(next){
+  let picks = { ...next };
+  for (let pass=0; pass<3; pass++){
+    for (const mid of MATCH_IDS){
+      const [pa, pb] = participantsFor(mid, picks);
+      const chosen = picks[mid];
+      if (!chosen) continue;
+      const valid = [pa.id, pb.id].includes(chosen);
+      if (!valid) delete picks[mid];
+    }
+  }
+  return picks;
+}
+
+/* Cookies / lock */
+function getCookie(name){
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : undefined;
+}
+function setCookie(name, value, maxAgeSeconds=60*60*24*365){
+  document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAgeSeconds}; path=/; samesite=lax`;
+}
+function getDeviceId(){
+  try {
+    let id = localStorage.getItem(LS_DEVICE_ID_KEY);
+    if (!id){ id = (crypto.randomUUID?.() || Math.random().toString(36).slice(2)); localStorage.setItem(LS_DEVICE_ID_KEY, id); }
+    return id;
+  } catch { return Math.random().toString(36).slice(2); }
+}
+function hasLock(){ try { return !!localStorage.getItem(LS_LOCK_KEY) || getCookie(COOKIE_LOCK_NAME)==='1'; } catch { return false; } }
+function setLock(){ try { localStorage.setItem(LS_LOCK_KEY,'1'); setCookie(COOKIE_LOCK_NAME,'1'); } catch{} }
+function clearLock(){ try { localStorage.removeItem(LS_LOCK_KEY); document.cookie = COOKIE_LOCK_NAME+"=; max-age=0; path=/; samesite=lax"; } catch{} }
+
+/* =========================================
+   CAPTURA DO PRINT
+========================================= */
+async function captureBracketBlob(node){
+  if (!node) return null;
+  const canvas = await html2canvas(node, {
+    backgroundColor: "#0b0b0b",
+    scale: 1,
+    useCORS: true,
+    allowTaint: true,
+    logging: false,
+  });
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+  return dataURLtoBlob(dataUrl);
+}
+function dataURLtoBlob(dataURL) {
+  const [meta, b64] = dataURL.split(",");
+  const contentType = /data:(.*?);base64/.exec(meta)?.[1] || "application/octet-stream";
+  const bin = atob(b64);
+  const len = bin.length;
+  const u8 = new Uint8Array(len);
+  for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+  return new Blob([u8], { type: contentType });
+}
+
+/* =========================================
+   RENDER
+========================================= */
+const app = document.getElementById("app");
+
+function render(){
+  if (state.locked){
+    app.innerHTML = `
+      <div class="mx-auto max-w-6xl p-4 min-h-screen bg-black">
+        <div class="rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-8 text-center shadow-xl">
+          <div class="mx-auto mb-3 h-10 w-10">🔒</div>
+          <h1 class="mb-1 text-2xl font-semibold">Palpite enviado</h1>
+          <p class="text-white/70">Você já registrou um palpite. Obrigado por participar!</p>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const allChosen = MATCH_IDS.every(m => !!state.picks[m]);
+  const canSubmit = !state.locked && state.name.trim().length >= 2 && allChosen;
+  const champion = refTeam(state.picks.m7);
+
+  app.innerHTML = `
+    <div class="mx-auto max-w-7xl p-4 min-h-screen bg-black">
+      <header class="mb-6">
+        <h1 class="text-3xl font-bold tracking-tight flex items-center gap-2">🏆 ${SITE_TITLE}</h1>
+        <p class="text-white/70">${SUBTITLE}</p>
+        <p class="mt-1 text-xs text-white/50">1 Palpite por pessoa, se quiser se manter anônimo é só colocar qualquer nick</p>
+      </header>
+
+      <form id="form" class="mb-6">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div class="flex-1">
+            <label for="nome" class="text-white block mb-1">Seu nome</label>
+            <input id="nome" value="${escapeHtml(state.name)}" placeholder="Nick"
+                   class="w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white placeholder:text-white/50" required />
+          </div>
+          <button id="btnSubmit" type="submit"
+                  class="rounded-2xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white px-4 py-2"
+                  ${canSubmit ? "" : "disabled"}>Enviar palpite</button>
+        </div>
+      </form>
+
+      <div id="bracket-capture" class="relative">
+        ${renderBracketHTML(state.picks, champion)}
+      </div>
+
+      <footer class="mt-10 text-center text-xs text-white/50"><p>© ${new Date().getFullYear()} - kmyzth</p></footer>
+    </div>
+  `;
+
+  const nomeEl = document.getElementById("nome");
+  const btnEl  = document.getElementById("btnSubmit");
+  nomeEl.addEventListener("input", e => {
+    state.name = e.target.value;
+    const allChosen = MATCH_IDS.every(m => !!state.picks[m]);
+    btnEl.disabled = !( !state.locked && state.name.trim().length >= 2 && allChosen );
+  });
+
+  document.getElementById("form").addEventListener("submit", onSubmit);
+
+  // Cliques nos times re-renderizam (a bracket muda)
+  for (const mid of MATCH_IDS){
+    const [a,b] = participantsFor(mid, state.picks);
+    const selectable = !(a && a.isPlaceholder) && !(b && b.isPlaceholder);
+    for (const who of ["a","b"]){
+      const id = who==="a" ? (a && a.id) : (b && b.id);
+      const btn = document.getElementById(`pick-${mid}-${who}`);
+      if (!btn) continue;
+      btn.addEventListener("click", ()=>{
+        if (!selectable) return;
+        const next = sanitizePicks({ ...state.picks, [mid]: id });
+        state.picks = next; render();
+      });
+    }
+  }
+}
+
+function renderBracketHTML(picks, champion){
+  const semiColumnBoxH = GROUP_H;
+  const finalColumnBoxH = GROUP_H * 2 + SEMIS_GAP;
+
+  const matchChip = (id, label) => {
+    const [a,b] = participantsFor(id, picks);
+    const value = picks[id];
+    const selectable = !(a.isPlaceholder) && !(b.isPlaceholder);
+    return `
+      <div class="relative" style="height:${MATCH_H}px">
+        <div class="mb-2 text-[11px] uppercase tracking-wider text-white/60">${label}</div>
+        <div class="space-y-2">
+          ${chipHTML(id,'a',a, value===a.id, selectable)}
+          ${chipHTML(id,'b',b, value===b.id, selectable)}
+        </div>
+      </div>
+    `;
+  };
+
+  const yConnector = (height, arm=ARM_W) => {
+    const matchCenter = LABEL_H + CHIP_H + CHIPS_GAP/2;
+    const y1 = matchCenter, y2 = matchCenter + MATCH_H + GROUP_GAP;
+    const mid = (y1 + y2) / 2, x = arm - 20;
+    return `
+      <svg width="${arm}" height="${height}" class="text-white/30">
+        <line x1="0" y1="${y1}" x2="${x}" y2="${y1}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <line x1="0" y1="${y2}" x2="${x}" y2="${y2}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <line x1="${x}" y1="${mid}" x2="${arm}" y2="${mid}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    `;
+  };
+
+  const tConnector = (height, arm=ARM_W) => {
+    const topCenter = GROUP_H/2, bottomCenter = GROUP_H + SEMIS_GAP + GROUP_H/2;
+    const mid = (topCenter + bottomCenter)/2, x = arm - 20;
+    return `
+      <svg width="${arm}" height="${height}" class="text-white/30">
+          <line x1="0" y1="${topCenter}" x2="${x}" y2="${topCenter}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="0" y1="${bottomCenter}" x2="${x}" y2="${bottomCenter}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="${x}" y1="${topCenter}" x2="${x}" y2="${bottomCenter}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="${x}" y1="${mid}" x2="${arm}" y2="${mid}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    `;
+  };
+
+  return `
+    <div class="relative grid gap-x-6 md:grid-cols-[minmax(280px,1fr)_auto_minmax(320px,1fr)_auto_minmax(320px,1fr)]">
+      <!-- Quartas -->
+      <div class="flex flex-col" style="gap:${SEMIS_GAP}px">
+        <div class="relative" style="height:${GROUP_H}px">
+          <div class="flex flex-col" style="gap:${GROUP_GAP}px">
+            ${matchChip("m1","Quartas A (Partida 1)")}
+            ${matchChip("m2","Quartas B (Partida 2)")}
+          </div>
+        </div>
+        <div class="relative" style="height:${GROUP_H}px">
+          <div class="flex flex-col" style="gap:${GROUP_GAP}px">
+            ${matchChip("m3","Quartas C (Partida 3)")}
+            ${matchChip("m4","Quartas D (Partida 4)")}
+          </div>
+        </div>
+      </div>
+
+      <!-- Conectores Quartas → Semis -->
+      <div class="flex flex-col" style="gap:${SEMIS_GAP}px">
+        ${yConnector(GROUP_H)}
+        ${yConnector(GROUP_H)}
+      </div>
+
+      <!-- Semis -->
+      <div class="flex flex-col" style="gap:${SEMIS_GAP}px">
+        <div class="flex items-center" style="height:${semiColumnBoxH}px">
+          ${matchChip("m5","Semifinal A (Partida 5)")}
+        </div>
+        <div class="flex items-center" style="height:${semiColumnBoxH}px">
+          ${matchChip("m6","Semifinal B (Partida 6)")}
+        </div>
+      </div>
+
+      <!-- Conectores Semis → Final -->
+      <div class="flex items-center" style="height:${finalColumnBoxH}px">
+        ${tConnector(finalColumnBoxH)}
+      </div>
+
+      <!-- Final + Campeão -->
+      <div class="flex flex-col items-stretch justify-center" style="height:${finalColumnBoxH}px">
+        ${matchChip("m7","Final (Partida 7)")}
+        <div class="mt-6 rounded-2xl border border-yellow-300/30 bg-gradient-to-br from-yellow-300/15 to-transparent p-4">
+          <div class="mb-2 flex items-center gap-2 text-yellow-200">🏆 <span class="text-sm font-semibold uppercase tracking-wide">Campeão</span></div>
+          ${
+            champion ? `
+              <div class="flex items-center gap-3">
+                <img src="${champion.logo}" class="h-10 w-10 object-contain logo" />
+                <div class="flex items-center gap-2">
+                  <span class="text-lg font-semibold">${champion.name}</span>
+                  <span class="inline-flex min-w-6 items-center justify-center rounded-md border border-white/15 bg-white/10 px-1.5 text-[10px] tabular-nums text-white/80">#${SEED[champion.id]}</span>
+                </div>
+              </div>
+            ` : `<p class="text-sm text-white/60">Escolha um vencedor na Final para revelar o campeão.</p>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function chipHTML(mid, who, t, selected, selectable){
+  const isPlaceholder = !!t.isPlaceholder;
+  const seed = SEED[t.id];
+  const pickId = `pick-${mid}-${who}`;
+  return `
+    <button id="${pickId}" type="button"
+      class="${classNames(
+        "group relative w-full overflow-hidden rounded-2xl px-3 py-2 text-left chip",
+        "backdrop-blur border transition",
+        "border-white/10 bg-white/5 hover:bg-white/10",
+        selected ? "ring-2 ring-indigo-400/60 border-indigo-400/40" : "hover:ring-1 hover:ring-white/20",
+        (!selectable) ? "opacity-60 cursor-not-allowed" : ""
+      )}">
+      <div class="absolute inset-0 pointer-events-none">
+        <div class="absolute -inset-px rounded-2xl bg-gradient-to-br from-indigo-400/20 to-transparent opacity-50"></div>
+      </div>
+      <div class="flex items-center gap-3">
+        ${t.logo ? `<img src="${t.logo}" class="h-8 w-8 object-contain logo" />` : `<div class="h-8 w-8"></div>`}
+        <span class="${selected ? "text-indigo-300" : ""} ${isPlaceholder ? "italic text-white/60" : "font-medium"}">${t.name}</span>
+        ${!isPlaceholder && seed ? `<span class="inline-flex min-w-6 items-center justify-center rounded-md border border-white/15 bg-white/10 px-1.5 text-[10px] tabular-nums text-white/80">#${seed}</span>` : ""}
+      </div>
+    </button>
+  `;
+}
+
+/* =========================================
+   ENVIO: Discord (com anexos)
+========================================= */
+async function sendViaDiscord(submission, pngOrJpegBlob, jsonBlob){
+  if (!DISCORD_WEBHOOK_URL) return false;
+
+  const fd = new FormData();
+  const lines = [
+    `**Novo palpite**`,
+    `**Nome:** ${submission.name}`,
+    `**Device:** ${submission.deviceId}`,
+    `**Quando:** ${submission.timestamp}`,
+    `**Origem:** ${location.href}`,
+    `**Picks:** ${Object.entries(submission.picks).map(([k,v])=>`${k.toUpperCase()}:${TEAMS[v]?.name||v}`).join(", ")}`
+  ];
+  const payload = { content: lines.join("\n") };
+
+  fd.append("payload_json", JSON.stringify(payload));
+  if (jsonBlob)      fd.append("files[0]", jsonBlob, `palpite-${submission.name}.json`);
+  if (pngOrJpegBlob) fd.append("files[1]", pngOrJpegBlob, `palpite-${submission.name}.jpg`);
+
+  try{
+    const r = await fetch(DISCORD_WEBHOOK_URL + "?wait=true", { method:"POST", body: fd });
+    const body = await r.text().catch(()=> "");
+    console.log("Discord webhook:", r.status, body || "(no body)");
+    return r.ok;
+  }catch(err){
+    console.error("Discord webhook error:", err);
+    return false;
+  }
+}
+
+async function onSubmit(e){
+  e.preventDefault();
+
+  const allChosen = MATCH_IDS.every(m => !!state.picks[m]);
+  const canSubmit = !state.locked && state.name.trim().length >= 2 && allChosen;
+  if (!canSubmit) return;
+
+  const submission = {
+    name: state.name.trim(),
+    picks: {
+      m1: state.picks.m1, m2: state.picks.m2, m3: state.picks.m3, m4: state.picks.m4,
+      m5: state.picks.m5, m6: state.picks.m6, m7: state.picks.m7,
+    },
+    timestamp: new Date().toISOString(),
+    ua: navigator.userAgent,
+    deviceId: getDeviceId(),
+  };
+
+  // 1) Captura imagem da bracket
+  let imgBlob = null;
+  try {
+    imgBlob = await captureBracketBlob(document.getElementById('bracket-capture'));
+  } catch (err) {
+    console.warn("Falha ao capturar imagem (seguindo só com JSON):", err);
+  }
+
+  // 2) Cria JSON
+  const jsonBlob = new Blob([JSON.stringify(submission, null, 2)], { type: "application/json" });
+
+  // 3) Envia pelo Discord
+  const ok = await sendViaDiscord(submission, imgBlob, jsonBlob);
+
+  if (ok) {
+    setLock(); state.locked = true; render();
+    alert("Palpite enviado!");
+  } else {
+    alert("Falha ao enviar seu palpite. O burro do kmyzth fez alguma coisa errado");
+  }
+}
+
+/* =========================================
+   BOOT
+========================================= */
+(function boot(){
+  const url = new URL(location.href);
+  if (url.searchParams.get("unlock") === "1") { clearLock(); }
+  state.locked = hasLock();
+  render();
+})();
+</script>
+</body>
+</html>
